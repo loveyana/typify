@@ -102,13 +102,15 @@ passed by reference where generated signatures previously passed a simple enum
 by value. Enabling this option is therefore a generated public API change.
 Numeric enums and impossible/empty enums are unchanged.
 
-Composition and discriminator-backed schemas are excluded conservatively.
-Enums reachable inside `oneOf`, `anyOf`, `allOf`, conditional/negated schemas,
-or a discriminator declaration remain closed, including referenced enums and
-merged enum value sets. A plain `oneOf` with a null branch remains eligible.
-Unrelated enums whose complete set of string values also occurs in protected
-compositions may remain closed. This avoids changing branch selection, but
-means the option does not make every string enum open.
+Real composition and discriminator schemas stay conservative: referenced types
+and their reachable inline/container enums remain closed, including late-added
+references. Protection follows schema/reference identity, not matching literal
+values in unrelated types. Plain `oneOf`/`anyOf` null wrappers, singleton `allOf`
+wrappers and disjoint object-only inheritance are eligible; overlapping fields,
+additional/pattern/property-name constraints keep the composition protected.
+Open/closed generated-name collisions fail rather than reuse an incompatible
+type. These exceptions never clear protection inherited from a real union.
+The option does not make every protocol discriminator or string enum open.
 
 The policy changes representation and parsing, not application authorization.
 It applies to request and response models alike. Consumers must explicitly

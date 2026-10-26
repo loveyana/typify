@@ -202,7 +202,8 @@ pub struct TypeSpace {
     uses_regress: bool,
 
     settings: TypeSpaceSettings,
-    closed_string_enum_values: BTreeSet<String>,
+    closed_enum_refs: BTreeSet<RefKey>,
+    closed_enum_context: bool,
 
     cache: SchemaCache,
 
@@ -224,7 +225,8 @@ impl Default for TypeSpace {
             uses_serde_json: Default::default(),
             uses_regress: Default::default(),
             settings: Default::default(),
-            closed_string_enum_values: Default::default(),
+            closed_enum_refs: Default::default(),
+            closed_enum_context: false,
             cache: Default::default(),
             defaults: Default::default(),
         }
@@ -691,12 +693,16 @@ impl TypeSpace {
 
             match maybe_replace {
                 None => {
-                    let type_name = if let RefKey::Def(name) = ref_name {
+                    let type_name = if let RefKey::Def(name) = &ref_name {
                         Name::Required(name.clone())
                     } else {
                         Name::Unknown
                     };
-                    self.convert_ref_type(type_name, schema, type_id)?
+                    let previous = self.closed_enum_context;
+                    self.closed_enum_context |= self.closed_enum_refs.contains(&ref_name);
+                    let result = self.convert_ref_type(type_name, schema, type_id);
+                    self.closed_enum_context = previous;
+                    result?
                 }
 
                 Some(replace_type) => {
@@ -824,26 +830,24 @@ impl TypeSpace {
     }
 
     fn collect_closed_string_enums(&mut self, schema: &Schema) {
-        open_enums::collect_closed_enums(
-            schema,
-            &self.definitions,
-            &mut self.closed_string_enum_values,
-        );
-        // An inline operation schema may reference a type added earlier.
-        // Close that shared type too, before generating any final output.
-        for entry in self.id_to_entry.values_mut() {
+        open_enums::collect_closed_enums(schema, &self.definitions, &mut self.closed_enum_refs);
+
+        let mut pending = self
+            .closed_enum_refs
+            .iter()
+            .filter_map(|key| self.ref_to_id.get(key).cloned())
+            .collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id.clone()) {
+                continue;
+            }
+            let Some(entry) = self.id_to_entry.get_mut(&id) else {
+                continue;
+            };
+            pending.extend(entry.child_type_ids());
             if let TypeEntryDetails::Enum(details) = &mut entry.details {
-                let values = details
-                    .variants
-                    .iter()
-                    .filter(|v| matches!(v.details, type_entry::VariantDetails::Simple))
-                    .map(|v| serde_json::Value::String(v.raw_name.clone()))
-                    .collect::<Vec<_>>();
-                if details.open_string
-                    && open_enums::string_values(&values)
-                        .iter()
-                        .all(|value| self.closed_string_enum_values.contains(value))
-                {
+                if details.open_string {
                     details.variants.pop();
                     details.open_string = false;
                     details
@@ -855,6 +859,27 @@ impl TypeSpace {
                 }
             }
         }
+    }
+
+    fn validate_enum_name_reuse(&self, entry: &TypeEntry) -> Result<()> {
+        let TypeEntryDetails::Enum(details) = &entry.details else {
+            return Ok(());
+        };
+        if let Some(existing) = self
+            .name_to_id
+            .get(&details.name)
+            .and_then(|id| self.id_to_entry.get(id))
+        {
+            if let TypeEntryDetails::Enum(existing) = &existing.details {
+                if details.open_string != existing.open_string {
+                    return Err(Error::InvalidSchema {
+                        type_name: Some(details.name.clone()),
+                        reason: "incompatible open/closed enum name reuse".to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Add all the types contained within a RootSchema including any

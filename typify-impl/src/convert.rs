@@ -31,7 +31,10 @@ impl TypeSpace {
             type_name,
             serde_json::to_string_pretty(schema).unwrap()
         );
-        match schema {
+        let previous = self.closed_enum_context;
+        self.closed_enum_context |= self.settings.open_string_enums
+            && crate::open_enums::requires_closed_context(schema, &self.definitions);
+        let result = match schema {
             Schema::Object(obj) => {
                 if let Some(type_entry) = self.cache.lookup(obj) {
                     Ok((type_entry, &obj.metadata))
@@ -42,7 +45,12 @@ impl TypeSpace {
 
             Schema::Bool(true) => self.convert_permissive(&None),
             Schema::Bool(false) => self.convert_never(type_name, schema),
+        };
+        self.closed_enum_context = previous;
+        if let Ok((entry, _)) = &result {
+            self.validate_enum_name_reuse(entry)?;
         }
+        result
     }
 
     pub(crate) fn convert_schema_object<'a>(
@@ -437,7 +445,7 @@ impl TypeSpace {
                         break;
                     }
                 }
-                let (type_entry, _) = self.convert_schema(type_name, &new_schema).unwrap();
+                let (type_entry, _) = self.convert_schema(type_name, &new_schema)?;
                 Ok((type_entry, metadata))
             }
 
@@ -963,11 +971,7 @@ impl TypeSpace {
                 original_schema.clone(),
             );
 
-            if self.settings.open_string_enums
-                && crate::open_enums::string_values(enum_values)
-                    .iter()
-                    .any(|value| !self.closed_string_enum_values.contains(value))
-            {
+            if self.settings.open_string_enums && !self.closed_enum_context {
                 let string_id = self.assign_type(TypeEntryDetails::String.into());
                 let TypeEntryDetails::Enum(details) = &mut ty.details else {
                     unreachable!();
@@ -1000,6 +1004,8 @@ impl TypeSpace {
                 }
             }
 
+            // Nullable wrapping assigns the inner type before returning.
+            self.validate_enum_name_reuse(&ty)?;
             if has_null {
                 ty = self.type_to_option(ty);
             }
@@ -1497,7 +1503,7 @@ impl TypeSpace {
         // for Option. We match this here because the mutual exclusion check
         // below may fail for cases such as Option<T> where T is defined to be,
         // say, (). In such a case, both variants are actually null.
-        if let Some(ty) = self.maybe_option(type_name.clone(), metadata, subschemas) {
+        if let Some(ty) = self.maybe_option(type_name.clone(), metadata, subschemas)? {
             return Ok((ty, metadata));
         }
 
@@ -1596,16 +1602,11 @@ impl TypeSpace {
         // are laid out; it would be nice to eliminate some of the guesswork,
         // but putting schemas into a predictable form.
 
+        if let Some(ty) = self.maybe_option(type_name.clone(), metadata, subschemas)? {
+            return Ok((ty, metadata));
+        }
         let ty = self
-            .maybe_option(type_name.clone(), metadata, subschemas)
-            .or_else(|| {
-                self.maybe_externally_tagged_enum(
-                    type_name.clone(),
-                    original_schema,
-                    metadata,
-                    subschemas,
-                )
-            })
+            .maybe_externally_tagged_enum(type_name.clone(), original_schema, metadata, subschemas)
             .or_else(|| {
                 self.maybe_adjacently_tagged_enum(
                     type_name.clone(),

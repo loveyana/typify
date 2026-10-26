@@ -16,7 +16,8 @@
     "combined": {"$ref": "#/definitions/Combined"},
     "intersection": {"$ref": "#/definitions/Intersection"},
     "constant_composition": {"$ref": "#/definitions/ConstantComposition"},
-    "negated_enum": {"$ref": "#/definitions/NegatedEnum"}
+    "negated_enum": {"$ref": "#/definitions/NegatedEnum"},
+    "any_nullable": {"$ref": "#/definitions/AnyNullable"}
   },
   "definitions": {
     "ProviderKind": {
@@ -35,6 +36,8 @@
       "maxLength": 8,
       "pattern": "^[a-z]+$"
     },
+    "AnyNullable": {"anyOf": [{"$ref": "#/definitions/NullableKind"}, {"type": "null"}]},
+    "NullableKind": {"type": "string", "enum": ["nullable_known"]},
     "Numeric": {"type": "integer", "enum": [1, 2]},
     "Choice": {
       "oneOf": [

@@ -29,9 +29,9 @@ impl TypeSpace {
         type_name: Name,
         metadata: &Option<Box<schemars::schema::Metadata>>,
         subschemas: &[Schema],
-    ) -> Option<TypeEntry> {
+    ) -> Result<Option<TypeEntry>> {
         if subschemas.len() == 1 {
-            return None;
+            return Ok(None);
         }
         // Let's be as general as possible and consider the possibility that
         // more than one subschema is a null.
@@ -41,14 +41,12 @@ impl TypeSpace {
             .collect::<Vec<_>>();
 
         if non_nulls.len() != 1 {
-            return None;
+            return Ok(None);
         }
 
-        let non_null = non_nulls.into_iter().next()?;
-
-        let (type_entry, _) = self.convert_option(type_name, metadata, non_null).ok()?;
-
-        Some(type_entry)
+        let non_null = non_nulls[0];
+        let (type_entry, _) = self.convert_option(type_name, metadata, non_null)?;
+        Ok(Some(type_entry))
     }
 
     pub(crate) fn maybe_externally_tagged_enum(
@@ -1253,6 +1251,7 @@ mod tests {
         let mut type_space = TypeSpace::default();
         let type_entry = type_space
             .maybe_option(Name::Unknown, &None, &subschemas)
+            .unwrap()
             .unwrap();
 
         assert_eq!(type_entry.details, TypeEntryDetails::Option(TypeId(1)))

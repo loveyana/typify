@@ -130,3 +130,15 @@ fn protected_constants_and_composing_node_values_remain_closed() {
     assert!(serde_json::from_str::<open::NegatedEnum>(r#""negation_a""#).is_ok());
     assert!(serde_json::from_str::<open::NegatedEnum>(r#""negation_b""#).is_err());
 }
+
+#[test]
+fn anyof_nullable_enum_preserves_unknown_and_null() {
+    let value: open::AnyNullable = serde_json::from_str(r#""future_nullable""#).unwrap();
+    assert_eq!(
+        serde_json::to_string(&value).unwrap(),
+        r#""future_nullable""#
+    );
+    let value: open::AnyNullable = serde_json::from_str("null").unwrap();
+    assert_eq!(serde_json::to_string(&value).unwrap(), "null");
+    assert!(serde_json::from_str::<closed::AnyNullable>(r#""future_nullable""#).is_err());
+}

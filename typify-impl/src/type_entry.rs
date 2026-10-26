@@ -557,6 +557,41 @@ impl From<TypeEntryDetails> for TypeEntry {
 }
 
 impl TypeEntry {
+    pub(crate) fn child_type_ids(&self) -> Vec<TypeId> {
+        match &self.details {
+            TypeEntryDetails::Enum(details) => details
+                .variants
+                .iter()
+                .flat_map(|variant| match &variant.details {
+                    VariantDetails::Simple => Vec::new(),
+                    VariantDetails::Item(id) => vec![id.clone()],
+                    VariantDetails::Tuple(ids) => ids.clone(),
+                    VariantDetails::Struct(properties) => {
+                        properties.iter().map(|p| p.type_id.clone()).collect()
+                    }
+                })
+                .collect(),
+            TypeEntryDetails::Struct(details) => details
+                .properties
+                .iter()
+                .map(|p| p.type_id.clone())
+                .collect(),
+            TypeEntryDetails::Newtype(details) => vec![details.type_id.clone()],
+            TypeEntryDetails::Native(details) => details.parameters.clone(),
+            TypeEntryDetails::Option(id)
+            | TypeEntryDetails::Box(id)
+            | TypeEntryDetails::Vec(id)
+            | TypeEntryDetails::Set(id)
+            | TypeEntryDetails::Array(id, _)
+            | TypeEntryDetails::Reference(id) => vec![id.clone()],
+            TypeEntryDetails::Map(key, value) => vec![key.clone(), value.clone()],
+            TypeEntryDetails::Tuple(ids) => ids.clone(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl TypeEntry {
     pub(crate) fn new_native<S: ToString>(type_name: S, impls: &[TypeSpaceImpl]) -> Self {
         TypeEntry {
             details: TypeEntryDetails::Native(TypeEntryNative {
