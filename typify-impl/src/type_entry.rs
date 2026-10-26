@@ -42,6 +42,7 @@ pub(crate) struct TypeEntryEnum {
     pub tag_type: EnumTagType,
     pub variants: Vec<Variant>,
     pub deny_unknown_fields: bool,
+    pub open_string: bool,
     pub bespoke_impls: BTreeSet<TypeEntryEnumImpl>,
     pub schema: SchemaWrapper,
 }
@@ -50,6 +51,7 @@ pub(crate) struct TypeEntryEnum {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum TypeEntryEnumImpl {
     AllSimpleVariants,
+    OpenString,
     UntaggedFromStr,
     UntaggedDisplay,
     /// This is a cached marker to let us know that at least one of the
@@ -301,6 +303,7 @@ impl TypeEntryEnum {
             tag_type,
             variants,
             deny_unknown_fields,
+            open_string: false,
             bespoke_impls: Default::default(),
             schema: SchemaWrapper(schema),
         });
@@ -322,6 +325,7 @@ impl TypeEntryEnum {
                     .iter()
                     .all(|variant| matches!(variant.details, VariantDetails::Simple)))
             .then_some(TypeEntryEnumImpl::AllSimpleVariants),
+            self.open_string.then_some(TypeEntryEnumImpl::OpenString),
             // Untagged and all variants impl FromStr, but none **is** a
             // String (i.e. irrefutably).
             untagged_newtype_variants(
@@ -625,12 +629,18 @@ impl TypeEntry {
                         .contains(&TypeEntryEnumImpl::AllSimpleVariants)
                         || details
                             .bespoke_impls
+                            .contains(&TypeEntryEnumImpl::OpenString)
+                        || details
+                            .bespoke_impls
                             .contains(&TypeEntryEnumImpl::UntaggedFromStr)
                 }
                 TypeSpaceImpl::Display => {
                     details
                         .bespoke_impls
                         .contains(&TypeEntryEnumImpl::AllSimpleVariants)
+                        || details
+                            .bespoke_impls
+                            .contains(&TypeEntryEnumImpl::OpenString)
                         || details
                             .bespoke_impls
                             .contains(&TypeEntryEnumImpl::UntaggedDisplay)
@@ -778,11 +788,18 @@ impl TypeEntry {
             tag_type,
             variants,
             deny_unknown_fields,
+            open_string,
             bespoke_impls,
             schema: SchemaWrapper(schema),
         } = enum_details;
 
         let doc = make_doc(name, description.as_ref(), schema);
+
+        if *open_string {
+            derive_set.remove("::serde::Serialize");
+            derive_set.remove("::serde::Deserialize");
+            derive_set.extend(["PartialOrd", "Ord", "PartialEq", "Eq", "Hash"]);
+        }
 
         // TODO this is a one-off for some useful traits; this should move into
         // the creation of the enum type.
@@ -814,7 +831,7 @@ impl TypeEntry {
             serde_options.push(quote! { deny_unknown_fields });
         }
 
-        let serde = (!serde_options.is_empty()).then(|| {
+        let serde = (!open_string && !serde_options.is_empty()).then(|| {
             quote! { #[serde( #( #serde_options ),* )] }
         });
 
@@ -822,7 +839,7 @@ impl TypeEntry {
 
         let variants_decl = variants
             .iter()
-            .map(|variant| output_variant(variant, type_space, output, name))
+            .map(|variant| output_variant(variant, type_space, output, name, !open_string))
             .collect::<Vec<_>>();
 
         // It should not be possible to construct an untagged enum
@@ -839,67 +856,155 @@ impl TypeEntry {
 
         // Display and FromStr impls for enums that are made exclusively of
         // simple variants (and are not untagged).
-        let simple_enum_impl = bespoke_impls
-            .contains(&TypeEntryEnumImpl::AllSimpleVariants)
-            .then(|| {
-                let (match_variants, match_strs): (Vec<_>, Vec<_>) = variants
-                    .iter()
-                    .map(|variant| {
-                        let ident_name = variant.ident_name.as_ref().unwrap();
-                        let variant_name = format_ident!("{}", ident_name);
-                        (variant_name, &variant.raw_name)
-                    })
-                    .unzip();
+        let simple_enum_impl = (bespoke_impls.contains(&TypeEntryEnumImpl::AllSimpleVariants)
+            || bespoke_impls.contains(&TypeEntryEnumImpl::OpenString))
+        .then(|| {
+            let (match_variants, match_strs): (Vec<_>, Vec<_>) = variants
+                .iter()
+                .filter(|variant| matches!(variant.details, VariantDetails::Simple))
+                .map(|variant| {
+                    let ident_name = variant.ident_name.as_ref().unwrap();
+                    let variant_name = format_ident!("{}", ident_name);
+                    (variant_name, &variant.raw_name)
+                })
+                .unzip();
 
-                quote! {
-                    impl ::std::fmt::Display for #type_name {
-                        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                            match *self {
-                                #(Self::#match_variants => f.write_str(#match_strs),)*
-                            }
+            let (unknown_display, unknown_from_str) = if *open_string {
+                let unknown =
+                    format_ident!("{}", variants.last().unwrap().ident_name.as_ref().unwrap());
+                let validation = match schema {
+                    Schema::Object(schema) => schema.string.as_deref(),
+                    Schema::Bool(_) => None,
+                };
+                let max = validation.and_then(|v| v.max_length).map(|max| {
+                    let message = format!("longer than {max} characters");
+                    quote! {
+                        if value.chars().count() > #max as usize {
+                            return Err(#message.into());
                         }
                     }
-                    impl ::std::str::FromStr for #type_name {
-                        type Err = self::error::ConversionError;
-
-                        fn from_str(value: &str) ->
-                            ::std::result::Result<Self, self::error::ConversionError>
-                        {
-                            match value {
-                                #(#match_strs => Ok(Self::#match_variants),)*
-                                _ => Err("invalid value".into()),
-                            }
+                });
+                let min = validation.and_then(|v| v.min_length).map(|min| {
+                    let message = format!("shorter than {min} characters");
+                    quote! {
+                        if value.chars().count() < #min as usize {
+                            return Err(#message.into());
                         }
                     }
-                    impl ::std::convert::TryFrom<&str> for #type_name {
-                        type Error = self::error::ConversionError;
-
-                        fn try_from(value: &str) ->
-                            ::std::result::Result<Self, self::error::ConversionError>
-                        {
-                            value.parse()
+                });
+                let pattern = validation.and_then(|v| v.pattern.as_ref()).map(|pattern| {
+                    let message = format!("doesn't match pattern \"{pattern}\"");
+                    quote! {
+                        static PATTERN: ::std::sync::LazyLock<::regress::Regex> =
+                            ::std::sync::LazyLock::new(|| ::regress::Regex::new(#pattern).unwrap());
+                        if PATTERN.find(value).is_none() {
+                            return Err(#message.into());
                         }
                     }
-                    impl ::std::convert::TryFrom<&::std::string::String> for #type_name {
-                        type Error = self::error::ConversionError;
+                });
+                (
+                    quote! { Self::#unknown(value) => f.write_str(value), },
+                    quote! {{
+                        #max #min #pattern
+                        Ok(Self::#unknown(value.to_owned()))
+                    }},
+                )
+            } else {
+                (quote! {}, quote! { Err("invalid value".into()) })
+            };
 
-                        fn try_from(value: &::std::string::String) ->
-                            ::std::result::Result<Self, self::error::ConversionError>
-                        {
-                            value.parse()
-                        }
-                    }
-                    impl ::std::convert::TryFrom<::std::string::String> for #type_name {
-                        type Error = self::error::ConversionError;
-
-                        fn try_from(value: ::std::string::String) ->
-                            ::std::result::Result<Self, self::error::ConversionError>
-                        {
-                            value.parse()
+            let display_value = if *open_string {
+                quote! { self }
+            } else {
+                quote! { *self }
+            };
+            quote! {
+                impl ::std::fmt::Display for #type_name {
+                    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                        match #display_value {
+                            #(Self::#match_variants => f.write_str(#match_strs),)*
+                            #unknown_display
                         }
                     }
                 }
-            });
+                impl ::std::str::FromStr for #type_name {
+                    type Err = self::error::ConversionError;
+
+                    fn from_str(value: &str) ->
+                        ::std::result::Result<Self, self::error::ConversionError>
+                    {
+                        match value {
+                            #(#match_strs => Ok(Self::#match_variants),)*
+                            _ => #unknown_from_str,
+                        }
+                    }
+                }
+                impl ::std::convert::TryFrom<&str> for #type_name {
+                    type Error = self::error::ConversionError;
+
+                    fn try_from(value: &str) ->
+                        ::std::result::Result<Self, self::error::ConversionError>
+                    {
+                        value.parse()
+                    }
+                }
+                impl ::std::convert::TryFrom<&::std::string::String> for #type_name {
+                    type Error = self::error::ConversionError;
+
+                    fn try_from(value: &::std::string::String) ->
+                        ::std::result::Result<Self, self::error::ConversionError>
+                    {
+                        value.parse()
+                    }
+                }
+                impl ::std::convert::TryFrom<::std::string::String> for #type_name {
+                    type Error = self::error::ConversionError;
+
+                    fn try_from(value: ::std::string::String) ->
+                        ::std::result::Result<Self, self::error::ConversionError>
+                    {
+                        value.parse()
+                    }
+                }
+            }
+        });
+
+        let open_string_impl = open_string.then(|| {
+            let unknown =
+                format_ident!("{}", variants.last().unwrap().ident_name.as_ref().unwrap());
+            let known = variants
+                .iter()
+                .filter(|v| matches!(v.details, VariantDetails::Simple));
+            let (names, wire): (Vec<_>, Vec<_>) = known
+                .map(|v| {
+                    (
+                        format_ident!("{}", v.ident_name.as_ref().unwrap()),
+                        &v.raw_name,
+                    )
+                })
+                .unzip();
+            quote! {
+                impl ::serde::Serialize for #type_name {
+                    fn serialize<S>(&self, serializer: S) -> ::std::result::Result<S::Ok, S::Error>
+                    where S: ::serde::Serializer {
+                        match self {
+                            #(Self::#names => serializer.serialize_str(#wire),)*
+                            Self::#unknown(value) => serializer.serialize_str(value),
+                        }
+                    }
+                }
+                impl<'de> ::serde::Deserialize<'de> for #type_name {
+                    fn deserialize<D>(deserializer: D) -> ::std::result::Result<Self, D::Error>
+                    where D: ::serde::Deserializer<'de> {
+                        <::std::string::String as ::serde::Deserialize>::deserialize(deserializer)?
+                            .parse()
+                            .map_err(|error: self::error::ConversionError| {
+                                <D::Error as ::serde::de::Error>::custom(error.to_string())
+                            })
+                    }
+                }
+            }
+        });
 
         let default_impl = default.as_ref().map(|value| {
             let default_stream = self.output_value(type_space, &value.0, &quote! {}).unwrap();
@@ -1087,17 +1192,20 @@ impl TypeEntry {
         );
 
         let attrs = strings_to_attrs(&self.extra_attrs, &type_space.settings.extra_attrs);
+        let non_exhaustive = open_string.then(|| quote! { #[non_exhaustive] });
 
         let item = quote! {
             #doc
             #(#attrs)*
             #[derive(#(#derives),*)]
             #serde
+            #non_exhaustive
             pub enum #type_name {
                 #(#variants_decl)*
             }
 
             #simple_enum_impl
+            #open_string_impl
             #default_impl
             #untagged_newtype_from_string_impl
             #untagged_newtype_to_string_impl

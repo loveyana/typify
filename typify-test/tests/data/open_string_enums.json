@@ -1,0 +1,85 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpenEnumResponse",
+  "type": "object",
+  "required": ["provider", "providers", "inline_state"],
+  "properties": {
+    "provider": {"$ref": "#/definitions/ProviderKind"},
+    "providers": {"type": "array", "items": {"$ref": "#/definitions/ProviderKind"}},
+    "inline_state": {"type": "string", "enum": ["pending", "done"]},
+    "optional_provider": {"$ref": "#/definitions/ProviderKind"},
+    "nullable_kind": {"type": ["string", "null"], "enum": ["known", null]},
+    "collision": {"$ref": "#/definitions/Collision"},
+    "constrained": {"$ref": "#/definitions/Constrained"},
+    "numeric": {"$ref": "#/definitions/Numeric"},
+    "choice": {"$ref": "#/definitions/Choice"},
+    "combined": {"$ref": "#/definitions/Combined"},
+    "intersection": {"$ref": "#/definitions/Intersection"},
+    "constant_composition": {"$ref": "#/definitions/ConstantComposition"},
+    "negated_enum": {"$ref": "#/definitions/NegatedEnum"}
+  },
+  "definitions": {
+    "ProviderKind": {
+      "type": "string",
+      "enum": ["api_key", "oauth_client"],
+      "default": "api_key"
+    },
+    "Collision": {
+      "type": "string",
+      "enum": ["unknown", "unknown_value", "known"]
+    },
+    "Constrained": {
+      "type": "string",
+      "enum": ["known"],
+      "minLength": 2,
+      "maxLength": 8,
+      "pattern": "^[a-z]+$"
+    },
+    "Numeric": {"type": "integer", "enum": [1, 2]},
+    "Choice": {
+      "oneOf": [
+        {
+          "title": "First",
+          "type": "object",
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"$ref": "#/definitions/FirstKind"},
+            "value": {"type": "string"}
+          }
+        },
+        {
+          "title": "Second",
+          "type": "object",
+          "required": ["kind", "value"],
+          "properties": {
+            "kind": {"type": "string", "enum": ["second"]},
+            "value": {"type": "integer"}
+          }
+        }
+      ]
+    },
+    "FirstKind": {"type": "string", "enum": ["first"]},
+    "Combined": {
+      "oneOf": [
+        {"type": "string", "enum": ["combined_a"]},
+        {"type": "string", "enum": ["combined_b"]}
+      ]
+    },
+    "ConstantComposition": {
+      "allOf": [
+        {"type": "string", "const": "constant_a"},
+        {"type": "string"}
+      ]
+    },
+    "NegatedEnum": {
+      "enum": ["negation_a", "negation_b"],
+      "not": {"enum": ["negation_b"]}
+    },
+    "Intersection": {
+      "allOf": [
+        {"type": "string", "enum": ["left", "shared"]},
+        {"type": "string", "enum": ["right", "shared"]}
+      ]
+    }
+  }
+}

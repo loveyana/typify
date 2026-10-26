@@ -748,13 +748,14 @@ pub(crate) fn output_variant(
     type_space: &TypeSpace,
     output: &mut OutputSpace,
     type_name: &str,
+    serialize_rename: bool,
 ) -> TokenStream {
     let ident_name = variant.ident_name.as_ref().unwrap();
     let variant_name = format_ident!("{}", ident_name);
     let doc = variant.description.as_ref().map(|s| {
         quote! { #[doc = #s] }
     });
-    let serde = (&variant.raw_name != ident_name).then(|| {
+    let serde = (serialize_rename && &variant.raw_name != ident_name).then(|| {
         let s = &variant.raw_name;
         quote! { #[serde(rename = #s)] }
     });
@@ -1052,6 +1053,7 @@ mod tests {
                 deny_unknown_fields: _,
                 bespoke_impls: _,
                 schema: _,
+                open_string: false,
             }) => {
                 assert_eq!(name, "UntaggedEnum");
                 assert_eq!(variants.len(), 5);

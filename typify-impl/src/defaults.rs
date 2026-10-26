@@ -148,6 +148,21 @@ impl TypeEntry {
     ) -> Result<DefaultKind> {
         match &self.details {
             TypeEntryDetails::Enum(TypeEntryEnum {
+                open_string: true,
+                variants,
+                ..
+            }) => {
+                let valid = default.as_str().is_some_and(|value| {
+                    variants.iter().any(|variant| {
+                        matches!(variant.details, VariantDetails::Simple)
+                            && variant.raw_name == value
+                    })
+                });
+                valid
+                    .then_some(DefaultKind::Specific)
+                    .ok_or_else(Error::invalid_value)
+            }
+            TypeEntryDetails::Enum(TypeEntryEnum {
                 tag_type, variants, ..
             }) => match tag_type {
                 EnumTagType::External => {

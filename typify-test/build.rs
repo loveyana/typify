@@ -126,6 +126,7 @@ struct UnknownFormat {
 }
 
 fn main() {
+    generate_open_enum_fixture();
     let mut type_space = TypeSpace::default();
 
     WithSet::add(&mut type_space);
@@ -166,6 +167,27 @@ fn main() {
     let mut out_file = Path::new(&env::var("OUT_DIR").unwrap()).to_path_buf();
     out_file.push("codegen_custommap.rs");
     fs::write(out_file, contents).unwrap();
+}
+
+fn generate_open_enum_fixture() {
+    let path = "tests/data/open_string_enums.json";
+    println!("cargo:rerun-if-changed={path}");
+    let schema: schemars::schema::RootSchema =
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    for (filename, enabled) in [
+        ("open_string_enums.rs", true),
+        ("closed_string_enums.rs", false),
+    ] {
+        let mut types =
+            TypeSpace::new(TypeSpaceSettings::default().with_open_string_enums(enabled));
+        types.add_root_schema(schema.clone()).unwrap();
+        let contents = prettyplease::unparse(&syn::parse2::<syn::File>(types.to_stream()).unwrap());
+        fs::write(
+            Path::new(&env::var("OUT_DIR").unwrap()).join(filename),
+            contents,
+        )
+        .unwrap();
+    }
 }
 
 trait AddType {

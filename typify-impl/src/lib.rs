@@ -20,6 +20,8 @@ use type_entry::{
 
 use crate::util::{sanitize, Case};
 
+mod open_enums;
+
 pub use crate::util::accept_as_ident;
 
 #[cfg(test)]
@@ -200,6 +202,7 @@ pub struct TypeSpace {
     uses_regress: bool,
 
     settings: TypeSpaceSettings,
+    closed_string_enum_values: BTreeSet<String>,
 
     cache: SchemaCache,
 
@@ -221,6 +224,7 @@ impl Default for TypeSpace {
             uses_serde_json: Default::default(),
             uses_regress: Default::default(),
             settings: Default::default(),
+            closed_string_enum_values: Default::default(),
             cache: Default::default(),
             defaults: Default::default(),
         }
@@ -300,6 +304,7 @@ pub struct TypeSpaceSettings {
     extra_derives: Vec<String>,
     extra_attrs: Vec<String>,
     struct_builder: bool,
+    open_string_enums: bool,
 
     unknown_crates: UnknownPolicy,
     crates: BTreeMap<String, CrateSpec>,
@@ -412,6 +417,17 @@ impl std::str::FromStr for TypeSpaceImpl {
 }
 
 impl TypeSpaceSettings {
+    /// Allow unknown strings in generated string enums.
+    ///
+    /// Disabled by default. When enabled, generated enums retain known
+    /// variants and represent unknown strings with an owned value. Enums
+    /// reachable from composition/discriminator schemas remain closed.
+    /// Open enums are not `Copy`; this policy affects request models too.
+    pub fn with_open_string_enums(&mut self, enabled: bool) -> &mut Self {
+        self.open_string_enums = enabled;
+        self
+    }
+
     /// Set the name of the path prefix for types defined in this [TypeSpace].
     pub fn with_type_mod<S: AsRef<str>>(&mut self, type_mod: S) -> &mut Self {
         self.type_mod = Some(type_mod.as_ref().to_string());
@@ -644,6 +660,11 @@ impl TypeSpace {
                 .insert(ref_name.clone(), TypeId(base_id + index as u64));
             self.definitions.insert(ref_name.clone(), schema.clone());
         }
+        if self.settings.open_string_enums {
+            for (_, schema) in &definitions {
+                self.collect_closed_string_enums(schema);
+            }
+        }
 
         // Convert all types; note that we use the type id assigned from the
         // previous step because each type may create additional types. This
@@ -781,6 +802,9 @@ impl TypeSpace {
         name_hint: Option<String>,
     ) -> Result<TypeId> {
         let base_id = self.next_id;
+        if self.settings.open_string_enums {
+            self.collect_closed_string_enums(schema);
+        }
 
         let name = match name_hint {
             Some(s) => Name::Suggested(s),
@@ -797,6 +821,40 @@ impl TypeSpace {
         }
 
         Ok(type_id)
+    }
+
+    fn collect_closed_string_enums(&mut self, schema: &Schema) {
+        open_enums::collect_closed_enums(
+            schema,
+            &self.definitions,
+            &mut self.closed_string_enum_values,
+        );
+        // An inline operation schema may reference a type added earlier.
+        // Close that shared type too, before generating any final output.
+        for entry in self.id_to_entry.values_mut() {
+            if let TypeEntryDetails::Enum(details) = &mut entry.details {
+                let values = details
+                    .variants
+                    .iter()
+                    .filter(|v| matches!(v.details, type_entry::VariantDetails::Simple))
+                    .map(|v| serde_json::Value::String(v.raw_name.clone()))
+                    .collect::<Vec<_>>();
+                if details.open_string
+                    && open_enums::string_values(&values)
+                        .iter()
+                        .all(|value| self.closed_string_enum_values.contains(value))
+                {
+                    details.variants.pop();
+                    details.open_string = false;
+                    details
+                        .bespoke_impls
+                        .remove(&type_entry::TypeEntryEnumImpl::OpenString);
+                    details
+                        .bespoke_impls
+                        .insert(type_entry::TypeEntryEnumImpl::AllSimpleVariants);
+                }
+            }
+        }
     }
 
     /// Add all the types contained within a RootSchema including any

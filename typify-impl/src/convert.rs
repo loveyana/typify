@@ -963,6 +963,43 @@ impl TypeSpace {
                 original_schema.clone(),
             );
 
+            if self.settings.open_string_enums
+                && crate::open_enums::string_values(enum_values)
+                    .iter()
+                    .any(|value| !self.closed_string_enum_values.contains(value))
+            {
+                let string_id = self.assign_type(TypeEntryDetails::String.into());
+                let TypeEntryDetails::Enum(details) = &mut ty.details else {
+                    unreachable!();
+                };
+                let mut fallback = "Unknown".to_string();
+                let mut suffix = 0;
+                while details
+                    .variants
+                    .iter()
+                    .any(|v| v.ident_name.as_deref() == Some(&fallback))
+                {
+                    suffix += 1;
+                    fallback = if suffix == 1 {
+                        "UnknownValue".to_string()
+                    } else {
+                        format!("UnknownValue{suffix}")
+                    };
+                }
+                details.variants.push(Variant {
+                    raw_name: fallback.clone(),
+                    ident_name: Some(fallback),
+                    description: Some(
+                        "An unrecognized string value, preserved without normalization.".into(),
+                    ),
+                    details: VariantDetails::Item(string_id),
+                });
+                details.open_string = true;
+                if validation.is_some_and(|v| v.pattern.is_some()) {
+                    self.uses_regress = true;
+                }
+            }
+
             if has_null {
                 ty = self.type_to_option(ty);
             }

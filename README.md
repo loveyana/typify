@@ -84,6 +84,37 @@ requirements for a map type.
 The `oneOf` construct maps to a Rust enum. Typify maps this to the various
 [serde enum types](https://serde.rs/enum-representations.html).
 
+### Opt-in open string enums
+
+This fork adds `TypeSpaceSettings::with_open_string_enums(true)`. The default
+remains closed and retains the upstream generated output.
+
+For eligible string enums, generation retains known variants and adds
+`Unknown(String)`. If that name is occupied by a known variant, the fallback
+uses `UnknownValue`, `UnknownValue2`, and so on. Deserialization, `FromStr`,
+`TryFrom`, `Display`, and serialization preserve unrecognized strings without
+trimming, case conversion, or a default substitution. Non-string JSON values
+are still rejected. String length/pattern constraints still apply to unknown
+values; schema defaults must still be valid known values.
+
+Open enums derive `Clone` rather than `Copy`, are `#[non_exhaustive]`, and are
+passed by reference where generated signatures previously passed a simple enum
+by value. Enabling this option is therefore a generated public API change.
+Numeric enums and impossible/empty enums are unchanged.
+
+Composition and discriminator-backed schemas are excluded conservatively.
+Enums reachable inside `oneOf`, `anyOf`, `allOf`, conditional/negated schemas,
+or a discriminator declaration remain closed, including referenced enums and
+merged enum value sets. A plain `oneOf` with a null branch remains eligible.
+Unrelated enums whose complete set of string values also occurs in protected
+compositions may remain closed. This avoids changing branch selection, but
+means the option does not make every string enum open.
+
+The policy changes representation and parsing, not application authorization.
+It applies to request and response models alike. Consumers must explicitly
+reject unsupported request values and unknown security-sensitive semantics
+before using them.
+
 ### AllOf
 
 The 'allOf' construct is handled by merging schemas. While most of the time,
